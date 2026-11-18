@@ -1,0 +1,26 @@
+name: Opdater Liveforbundet-kalender
+on:
+  schedule:
+    - cron: "0 5 * * *"   # dagligt kl. 05 UTC
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests beautifulsoup4
+      - run: |
+          python liveforbundet_ics.py -o new.ics
+          grep -q BEGIN:VEVENT new.ics   # stop hvis kalenderen er tom
+          mv new.ics liveforbundet.ics
+      - run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add liveforbundet.ics
+          git diff --cached --quiet || git commit -m "Opdater kalender"
+          git push
