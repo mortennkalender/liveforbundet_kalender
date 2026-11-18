@@ -25,10 +25,11 @@ MONTHS = {"januar": 1, "februar": 2, "marts": 3, "april": 4, "maj": 5, "juni": 6
           "juli": 7, "august": 8, "september": 9, "oktober": 10,
           "november": 11, "december": 12}
 
-ADDRESSES = {
-    "toldkammer": "Havnepladsen 1, 3000 Helsingør",
-    "kulturværftet": "Allegade 2, 3000 Helsingør",
-}
+# (søgeord i "Sted:", venue-navn, adresse) - "Store Scene" er på Kulturværftet, "Store Sal" i Toldkammeret
+VENUES = [
+    (("toldkammer", "store sal"), "Toldkammeret", "Havnepladsen 1, 3000 Helsingør"),
+    (("kulturværft", "store scene", "lille scene"), "Kulturværftet", "Allegade 2, 3000 Helsingør"),
+]
 
 LABELS = ["Dato:", "Tid:", "Døre:", "Varighed:", "Pris:", "Sted:", "Placering:"]
 
@@ -97,7 +98,10 @@ def scrape(url):
     t = parse_time(f.get("Tid:")) or (19, 30)
     start = datetime(*d, *t, tzinfo=TZ)
     sted = f.get("Sted:", "Helsingør").replace("– Find vej", "").strip()
-    addr = next((v for k, v in ADDRESSES.items() if k in sted.lower()), "Helsingør")
+    venue, addr = next(((n, a) for keys, n, a in VENUES
+                        if any(k in sted.lower() for k in keys)), (None, "Helsingør"))
+    if venue and venue.lower() not in sted.lower():
+        sted = f"{venue}, {sted}"
     desc = [f"Døre: {f['Døre:']}" if f.get("Døre:") else "",
             f"Pris: {f['Pris:']}" if f.get("Pris:") else "",
             f"Placering: {f['Placering:']}" if f.get("Placering:") else "",
