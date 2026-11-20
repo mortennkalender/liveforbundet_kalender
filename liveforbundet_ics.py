@@ -8,16 +8,22 @@ Brug:  pip install requests beautifulsoup4
        python liveforbundet_ics.py -o sti.ics
 """
 import argparse
+import json
+import os
 import re
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import requests
 from bs4 import BeautifulSoup
 
 LIST_URL = "https://kuto.dk/liveforbundet/"
+ARCHIVE_URL = "https://kuto.dk/arrangementer/page/{}/"
+CACHE_FILE = "nonlf_cache.json"   # sider der IKKE er Liveforbundet (sparer requests)
+CACHE_DAYS = 14                   # tjek dem igen efter 14 dage
+LF_MARKER = "del af liveforbundet"
 TZ = ZoneInfo("Europe/Copenhagen")
 UA = {"User-Agent": "liveforbundet-ics/1.0 (personal calendar feed)"}
 
@@ -40,6 +46,15 @@ def get(url):
     return BeautifulSoup(r.text, "html.parser")
 
 
+def get_or_none(url):
+    try:
+        return get(url)
+    except requests.HTTPError as e:
+        if e.response is not None and e.response.status_code == 404:
+            return None
+        raise
+
+
 def event_links():
     soup = get(LIST_URL)
     links = []
@@ -48,6 +63,44 @@ def event_links():
         if re.search(r"/arrangementer/[^/]+/?$", href) and href not in links:
             links.append(href)
     return links
+
+
+def archive_candidates(today):
+    """Alle kommende arrangementer fra kuto.dk's arkiv (uanset om de er Liveforbundet)."""
+    urls = []
+    for n in range(1, 100):
+        soup = get_or_none(ARCHIVE_URL.format(n))
+        if soup is None:
+            break
+        found = 0
+        for h in soup.find_all(["h2", "h3", "h4"]):
+            a = h.find("a", href=re.compile(r"/arrangementer/[^/]+/?$"))
+            if not a:
+                continue
+            found += 1
+            href = a["href"].split("#")[0].split("?")[0]
+            ds = h.find_next(string=re.compile(r"\d{1,2}\.\s*[A-Za-zæøåÆØÅ]+\s+\d{4}"))
+            d = parse_date(ds) if ds else None
+            if (d is None or date(*d) >= today) and href not in urls:
+                urls.append(href)
+        if not found:
+            break
+        time.sleep(0.3)
+    return urls
+
+
+def is_liveforbundet(soup):
+    return LF_MARKER in soup.get_text(" ").lower()
+
+
+def load_cache(today):
+    try:
+        with open(CACHE_FILE, encoding="utf-8") as fh:
+            c = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    return {u: d for u, d in c.items()
+            if (today - date.fromisoformat(d)).days < CACHE_DAYS}
 
 
 def fields(soup):
@@ -88,8 +141,8 @@ def parse_duration(s):
     return timedelta(minutes=mins or 120)
 
 
-def scrape(url):
-    soup = get(url)
+def scrape(url, soup=None):
+    soup = soup or get(url)
     title = soup.find("h1").get_text(strip=True) if soup.find("h1") else url
     f = fields(soup)
     d = parse_date(f.get("Dato:", ""))
@@ -158,16 +211,28 @@ def main():
     ap.add_argument("-o", "--output", default="liveforbundet.ics")
     args = ap.parse_args()
     now = datetime.now(TZ)
+    today = now.date()
+    listed = event_links()                       # Liveforbundets egen oversigt
+    cache = load_cache(today)
+    extra = [u for u in archive_candidates(today) if u not in listed and u not in cache]
     events = []
-    for url in event_links():
+    for url in listed + extra:
         try:
-            e = scrape(url)
+            soup = get(url)
+            if url not in listed:
+                if not is_liveforbundet(soup):
+                    cache[url] = today.isoformat()
+                    continue
+                print(f"+ fundet i arkivet: {url}")
+            e = scrape(url, soup)
         except Exception as ex:
             print(f"! {url}: {ex}", file=sys.stderr); continue
         if e and e["end"] > now:
             events.append(e)
             print(f"{e['start']:%d-%m-%Y %H:%M}  {e['title']}  ({e['location']})")
         time.sleep(0.5)  # vær flink ved serveren
+    with open(CACHE_FILE, "w", encoding="utf-8") as fh:
+        json.dump(cache, fh, indent=0, sort_keys=True)
     events.sort(key=lambda e: e["start"])
     with open(args.output, "w", encoding="utf-8", newline="") as fh:
         fh.write(to_ics(events))
